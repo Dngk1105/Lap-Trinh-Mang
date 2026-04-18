@@ -6,8 +6,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <netdb.h>
-#include <sys/select.h>
-
+#include <poll.h>
 
 #define MAX_CLIENTS 512
 
@@ -83,49 +82,44 @@ int main() {
 
     printf("Server dang lang nghe tai cong 8080 \n");
 
-    // Danh sach Clients
     struct Client clients[MAX_CLIENTS];
     int nClients = 0;
 
-    fd_set fdread, fdtest;
-    
-    // Gan listener vao mang bit fd_set de theo doi cac ket noi oi
-    FD_ZERO(&fdread);
-    FD_SET(listener, &fdread);
-
-    int max_fd = listener;
-    struct timeval tv;
+    struct pollfd fds[MAX_CLIENTS + 1]; 
     char buf[256];
     
     while(1) {
-        fdtest = fdread; 
-
-        // timeout
-        tv.tv_sec = 5;
-        tv.tv_usec = 0;
+        int nfds = 0;
         
-        int ret = select(max_fd + 1, &fdtest, NULL, NULL, &tv);
-        if (ret < 0) {
-            perror("loi select");
-            return 1;
-        } else if (ret == 0) {
-            continue;
+        fds[nfds].fd = listener;
+        fds[nfds].events = POLLIN;
+        nfds++;
+
+        for (int i = 0; i < nClients; i++) {
+            fds[nfds].fd = clients[i].client_fd;
+            fds[nfds].events = POLLIN;
+            nfds++;
         }
 
-        if (FD_ISSET(listener, &fdtest)) { 
+        int ret = poll(fds, nfds, 5000); 
+        if (ret < 0) {
+            perror("loi poll");
+            return 1;
+        } else if (ret == 0) {
+            continue; // Timeout
+        }
+
+        
+        // Check listener
+        if (fds[0].revents & POLLIN) { 
             int client_fd = accept(listener, NULL, NULL);
             if (client_fd < 0) continue;
 
             if (nClients < MAX_CLIENTS) {
-                // Ghi nhan mot client moi
                 clients[nClients].client_fd = client_fd;
                 clients[nClients].room_joined = 0;
                 memset(clients[nClients].client_name, 0, sizeof(clients[nClients].client_name));
                 nClients++;
-
-                // Them client vao danh sach theo doi
-                FD_SET(client_fd, &fdread);
-                if (max_fd < client_fd) max_fd = client_fd;
 
                 printf("Co client moi ket noi: %d\n", client_fd);
                 char msg[512];
@@ -139,10 +133,11 @@ int main() {
             }
         }
 
+        // Check các clients
         for (int i = 0; i < nClients; i++) {
             int client_fd = clients[i].client_fd;
             
-            if (FD_ISSET(client_fd, &fdtest)) {
+            if (fds[i + 1].revents & (POLLIN | POLLERR)) {
                 ret = recv(client_fd, buf, sizeof(buf) - 1, 0);
 
                 if (ret <= 0) {
@@ -151,9 +146,7 @@ int main() {
                     snprintf(msg, sizeof(msg), "Client %d mat/ngat ket noi\n", client_fd);
                     sendToAll(clients, &nClients, msg, listener, "Server");
                     
-                    FD_CLR(client_fd, &fdread);
                     close(client_fd);
-
                     removeClient(clients, &nClients, i);
                     i--;
                 } else {
@@ -167,7 +160,7 @@ int main() {
                     if (clients[i].room_joined) {
                         printf("Gui tin nhan tu %d toi ca phong\n", client_fd);
                         sendToAll(clients, &nClients, buf, client_fd, clients[i].client_name);
-                    } else { // Chua join room
+                    } else {
                         if (processJoinRequest(buf, client_fd, clients[i].client_name)) {
                             clients[i].room_joined = 1;
                             
